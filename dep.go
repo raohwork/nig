@@ -5,128 +5,76 @@
 package nig
 
 import (
+	"slices"
+
 	"github.com/gin-gonic/gin"
 )
 
-// Dep represents a dependency that can be created, set, and retrieved from the
-// Gin context. It manages the lifecycle of a dependency within a request.
+type anotherDep interface {
+	setup() []gin.HandlerFunc
+	setKey(string)
+	dependsOn() []anotherDep
+	getKey() string
+	_equal(anotherDep) bool
+}
+
+// Dep represents a dependency of you gin application.
 //
-// Implementations of Dep are typically created using NewDep.
-type Dep[T any] interface {
-	// Setup is a Gin middleware that ensures the dependency is available in the
-	// Gin context. If the dependency is not already present, it will be created
-	// and set.
-	//
-	// This is designed to be used as a middleware. The default implementation
-	// in this package is just call Set and c.Abort() if it returns false.
-	Setup(*gin.Context)
-
-	// Set attempts to create and set the dependency in the Gin context if it's
-	// not already present. It returns true if the dependency is successfully
-	// set or was already present, false otherwise.
-	//
-	// Creation and error handling are done here. Typically you should only
-	// use this method when you have a dependency that depends on another
-	// dependency.
-	Set(*gin.Context) bool
-
-	// Get retrieves the dependency's value from the Gin context. It assumes
-	// the dependency has already been set (e.g., by calling Setup or Set).
-	Get(*gin.Context) T
-
-	// Update replaces the existing dependency value in the Gin context with the
-	// provided value. This is useful for modifying a dependency's state during
-	// a request.
-	Update(*gin.Context, T)
-}
-
-type dep[T any] struct {
-	creater func(*gin.Context) (T, bool)
-	setter  func(*gin.Context, T)
-	getter  func(*gin.Context) (T, bool)
-}
-
-func (d *dep[T]) Setup(c *gin.Context) {
-	if !d.Set(c) {
-		c.Abort()
-	}
-}
-
-func (d *dep[T]) Set(c *gin.Context) bool {
-	v, ok := d.getter(c)
-	if ok {
-		return true
-	}
-
-	v, ok = d.creater(c)
-	if ok {
-		d.setter(c, v)
-	}
-	return ok
-}
-
-func (d *dep[T]) Get(c *gin.Context) T {
-	v, _ := d.getter(c)
-	return v
-}
-
-func (d *dep[T]) Update(c *gin.Context, val T) {
-	d.setter(c, val)
-}
-
-// NewDep creates a new Dep instance. It takes three functions:
-//   - creater: A function that attempts to create or retrieve the dependency's
-//     value. It returns the value and a boolean indicating success.
-//     This function is called only if the dependency is not already
-//     present in the context. You should ensure that this function calls c.Abort
-//     if it fails to create the dependency, so Dep.Setup does not continue
-//     processing the request.
-//   - setter:  A function that stores the dependency's value in the Gin context.
-//     This is typically done using `c.Set("key", value)`.
-//   - getter:  A function that retrieves the dependency's value from the Gin
-//     context. It should return the value and a boolean indicating
-//     if the value was found and is of the correct type.
-//     This is typically done using `c.Get("key")` and type assertion.
+// A dependency is composed by a value with set of gin middlewares.
+// You can not create your own implementation, only [CreateDep] is
+// capable to create new Dep instance. The value of Dep is mean to
+// varies with different request. If the value is unchanged among
+// all request, you should place it in a shared struct, as Dep passes
+// value via [gin.Context.Set], which creates some overhead.
 //
-// In general you should use CreateDep instead of this function, unless you need
-// specific behavior like setting multiple keys in the Gin context or saving the
-// dependency in a different way.
-func NewDep[T any](creater func(*gin.Context) (T, bool), setter func(*gin.Context, T), getter func(*gin.Context) (T, bool)) Dep[T] {
-	return &dep[T]{
-		creater: creater,
-		setter:  setter,
-		getter:  getter,
+// There are 2 types of dependencies in general: read only and updatable.
+// A common example of read only Dep is request id. Logger is a good
+// example of updatable Dep. Take a look at [Updates] for more info.
+//
+// It's quite common that a Dep depends another Dep. Take a look at
+// [DependsOn] for more info.
+type Dep[T any] struct {
+	key     string
+	mws     []gin.HandlerFunc
+	depends []anotherDep
+	create  func(*gin.Context) T
+}
+
+func (i *Dep[T]) setup() []gin.HandlerFunc   { return i.mws }
+func (i *Dep[T]) _equal(v anotherDep) bool   { return i.key == v.getKey() }
+func (i *Dep[T]) setKey(key string)          { i.key = key }
+func (i *Dep[T]) getKey() string             { return i.key }
+func (i *Dep[T]) setValue(c *gin.Context)    { i.Update(c, i.create(c)) }
+func (i *Dep[T]) Update(c *gin.Context, v T) { c.Set(i.key, v) }
+func (i *Dep[T]) dependsOn() []anotherDep    { return i.depends }
+func (i *Dep[T]) Get(c *gin.Context) T {
+	v, _ := c.Get(i.key)
+	t, _ := v.(T)
+	return t
+}
+func (i *Dep[T]) addDep(b anotherDep) {
+	if !slices.Contains(i.depends, b) {
+		i.depends = append(i.depends, b)
 	}
 }
 
-// CreateDep is a convenience function to create a Dep instance with a specific key
-// in the Gin context. It simplifies the creation of dependencies by providing a
-// common pattern for creating, setting, and getting dependencies.
-func CreateDep[T any](key string, creater func(*gin.Context) (T, bool)) Dep[T] {
-	return NewDep(
-		creater,
-		func(c *gin.Context, val T) {
-			c.Set(key, val)
-		},
-		func(c *gin.Context) (ret T, ok bool) {
-			v, ok := c.Get(key)
-			if !ok {
-				return ret, false
-			}
-			ret, ok = v.(T)
-			return
-		},
-	)
+func NewDep[T any](creater func(*gin.Context) T, mw ...gin.HandlerFunc) *Dep[T] {
+	ret := &Dep[T]{
+		create: creater,
+	}
+	ret.mws = append(mw, ret.setValue)
+	return ret
 }
 
-// Use is a convenience function to create a Dep instance that always returns
-// a predefined value. This is useful for cases where you have an external
-// dependency that should be checked/created elsewhere like db connection.
-func Use[T any](v T, key string) Dep[T] {
-	return CreateDep(
-		key,
-		func(*gin.Context) (T, bool) {
-			return v, true
-		},
-	)
+func DependsOn[D, T any](dep *Dep[D], victim *Dep[T]) *Dep[T] {
+	victim.addDep(dep)
+	return victim
+}
+
+func Updates[D, T any](dep *Dep[D], victim *Dep[T], f func(D, T) D) *Dep[T] {
+	victim.addDep(dep)
+	victim.mws = append(victim.mws, func(c *gin.Context) {
+		dep.Update(c, f(dep.Get(c), victim.Get(c)))
+	})
+	return victim
 }

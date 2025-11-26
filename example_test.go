@@ -5,110 +5,53 @@
 package nig
 
 import (
-	"errors"
+	"fmt"
+	"io"
+	"os"
 
+	"github.com/gin-contrib/requestid"
 	"github.com/gin-gonic/gin"
+	"github.com/rs/zerolog"
 )
 
-// fake zerolog.Logger
-type ZerologLogger struct{}
-
-// fake gorm.DB
-type GormDB struct{}
-
-// fake github.com/gin-contrib/requestid
-type RequestID struct{}
-
-type baseServices struct {
-	Logger ZerologLogger
-	DB     *GormDB
+func Logger(base zerolog.Logger) *Dep[zerolog.Logger] {
+	return NewDep(func(_ *gin.Context) zerolog.Logger { return base })
 }
 
-type MyClaim struct {
-	// Add fields for your JWT claim
+func ReqID(l *Dep[zerolog.Logger]) *Dep[string] {
+	reqid := NewDep(requestid.Get, requestid.New())
+	return Updates(l, reqid, func(l zerolog.Logger, reqid string) zerolog.Logger {
+		return l.With().Str("request_id", reqid).Logger()
+	})
 }
 
-var useReqid = CreateDep(
-	"request_id",
-	func(c *gin.Context) (string, bool) {
-		// reqid := requestid.Get(c)
-		reqid := "fake-request-id" // replace with actual request ID extraction logic
-		if reqid == "" {
-			return "", false
-		}
-		return reqid, true
-	},
-)
-
-var useLogger = CreateDep(
-	"logger",
-	func(c *gin.Context) (ZerologLogger, bool) {
-		// l := log.With().
-		// 	Str("client_ip", c.ClientIP()).
-		// 	Str("req_id", useReqid.Get(c)).
-		// 	Logger()
-		l := ZerologLogger{}
-		return l, true
-	},
-)
-
-func fakeExtractJWT(code string) (*MyClaim, error) {
-	return nil, errors.New("fake JWT extraction not implemented")
+type HelloArgs struct {
+	Log       zerolog.Logger `nig:"logger"`
+	RequestID string         `nig:"request_id"`
 }
-
-// useJWT extracts JWT claims from the request context. It also depends on the logger
-var useJWT = CreateDep(
-	"jwt_claim",
-	func(c *gin.Context) (ret *MyClaim, ok bool) {
-		if !useLogger.Set(c) {
-			return
-		}
-
-		claim, err := fakeExtractJWT("token code extracted from request")
-		if err != nil {
-			return nil, false
-		}
-
-		// useLogger.Update(
-		//     c,
-		//     useLogger.Get(c).With().Interface("jwt", claim).Logger,
-		// )
-
-		return claim, true
-	},
-)
 
 func Example() {
-	db := &GormDB{} // fake gorm.DB instance
-
+	// discard gin log to prevent output pollution
+	gin.DefaultWriter = io.Discard
 	g := gin.Default()
-	// g.Use(cors.Default())
-	// g.Use(requestid.New())
 
-	useDB := Use(db, "db")
+	baseLogger := zerolog.New(os.Stdout)
+	logger := Logger(baseLogger)
+	reqid := ReqID(logger)
 
-	baseTool := NewArg(func() gin.HandlersChain {
-		return gin.HandlersChain{useLogger.Setup, useDB.Setup}
-	}, func(c *gin.Context) baseServices {
-		return baseServices{
-			Logger: useLogger.Get(c),
-			DB:     useDB.Get(c),
-		}
+	mgr := New(g)
+	mgr.Register("logger", logger)
+	mgr.Register("request_id", reqid)
+
+	// will panic if any error
+	mgr.GET("/", func(c *gin.Context, use HelloArgs) {
+		use.Log.Info().Msg("hello")
+		c.JSON(200, gin.H{"data": "hello", "request_id": use.RequestID})
 	})
 
-	With(g, baseTool).
-		GET("/example", func(c *gin.Context, use baseServices) {
-			// use.Logger.Debug().Msg("test") // client_ip is set
-			// use.DB.Exec("SELECT 1")
-		})
+	fmt.Println("Starting server...")
+	// actually run the server
+	// g.Run(":8080")
 
-	With2Args(g, baseTool, FromDep(useJWT)).
-		// user is never nil since useJWT never returns (nil, true)
-		GET("/example-with-jwt", func(c *gin.Context, use baseServices, user *MyClaim) {
-			// use.Logger.Debug().Msg("test") // client_ip/jwt are set
-			// use.DB.Exec("SELECT 1")
-			// c.JSON(200, gin.H{"name": user.Name})
-		})
-
-	//output:
+	//output: Starting server...
 }

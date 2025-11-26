@@ -1,88 +1,50 @@
-# NIG - Lightweight Dependency Injection for Gin-Gonic
+# NIG - Simple middleware management and DI for Gin-Gonic
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/raohwork/nig.svg)](https://pkg.go.dev/github.com/raohwork/nig)
 
-A lightweight dependency injection and handler wrapping mechanism for [Gin-Gonic](https://github.com/gin-gonic/gin), simplifying the management of dependencies and enabling cleaner, more testable Gin handlers.
+NIG helps mid-sized project to manage gin middlewares.
 
-> **Note**: NIG is not meant to solve complex problems. For more sophisticated dependency injection needs, consider using dedicated DI libraries like [Fx](https://github.com/uber-go/fx) or [Wire](https://github.com/google/wire).
+# TL; DR
 
-## Core Concepts
+Take a look at `example_test.go` and `integral_test.go`.
 
-NIG introduces three core concepts:
+# Concept and usage
 
-- **Dep**: Represents a dependency that can be created, set, and retrieved from the Gin context. It manages the lifecycle of dependencies within a request.
-- **Arg**: An injectable argument for Gin handlers. It typically wraps one or more Dep instances to define the required middleware setup and value extraction from the context. Most commonly created using `FromDep()` or by combining multiple dependencies.
-- **Wrapper**: Provides a fluent API for defining Gin routes, automatically injecting the specified arguments into your handlers.
+The core of NIG is `Dep[T]`, a factory to create instance of `T` which is needed by handler, and the instance is extracted/computed from gin.Context via a user defined function or middleware.
 
-## Installation
+A `Dep[T]` is composed by:
 
-```bash
-go get github.com/raohwork/nig
-```
+- An instance of `T`: extracted from gin.Context (like jwt), generated on-the-fly (like request id or logger).
+- Set of gin middlewares: optional.
+- Another `Dep[T]`: To compute from, or to be updated.
 
-## Usage
+To be clear, if every request shares same instance of `T`, db connection for example, it is NOT a `Dep[T]`. You probably should put it in a struct, and define handler as method of the struct.
 
-NIG follows a simple three-step pattern:
+Here are some good examples of `Dep[T]`:
 
-### 1. Define Dependencies
-Wrap your dependencies (logger, database, etc.) as `Dep` instances:
+- Request ID: likely Dep[string] or Dep[uuid.UUID].
+- Structured logger: Dep[zerolog.Logger] is my favorite.
+- User info: Dep[UserInfo] which is extracted from jwt.
+- JWT: Dep[[]byte] if you need raw JWT.
+- Session data: Dep[SessionData] or Dep[*SessionData] if you don't use JWT.
 
-```go
-var logger = nig.CreateDep("logger", func(c *gin.Context) (*zap.Logger, bool) {
-    // Initialize your logger with request context
-    return zap.NewProduction()
-})
+If you defines `Dep[T]` properly, NIG ensures your handler will get working instance of `T`, by running middlewares bundled with `Dep[T]` and it's dependencies. The middleware bundled with `Dep[T]` MUST cooperate with handler well. For example, a `Dep[MyJWTClaim]` should return HTTP 403 and call `c.Abort()` if it failed to extract claim data from JWT, unless you want to handle it in your handler (and you probably want `Dep[*MyJWTClaim]` instead).
 
-var db = nig.Use(myDBPool, "db") // Use existing connection pool
-```
+There will be two different approach: runtime and statically. Currently only runtime is implemented.
 
-### 2. Create Handler Arguments
-Combine related dependencies into `Arg` instances:
+## Ensure at runtime
 
-```go
-// Single dependency
-userArg := nig.FromDep(jwtDep)
+`Manager` helps you to manage your `Dep[T]` and handlers. 
 
-// Multiple dependencies bundled together
-type MyServices struct {
-    Logger
-    DB
-}
-servicesArg := nig.NewArg(func() gin.HandlersChain {
-    return gin.HandlersChain{loggerDep.Setup, dbDep.Setup}
-}, func(c *gin.Context) MyServices {
-    return MyServices{ Logger: loggerDep.Get(c), DB: dbDep.Get(c) }
-})
-```
-
-### 3. Type-Safe Handlers
-Your handlers receive actual types, with dependencies visible in the function signature:
-
-```go
-nig.With(router, servicesArg).
-    GET("/users", func(c *gin.Context, services MyServices) {
-        // services.Logger and services.DB are ready to use
-    })
-
-nig.With2Args(router, servicesArg, userArg).
-    GET("/profile", func(c *gin.Context, services MyServices, user *User) {
-        // Both services and user are automatically injected
-    })
-```
-
-**Key Benefits:**
-- Dependencies are explicit in function signatures
-- Type-safe dependency injection
-- No magic strings or reflection at runtime
-
-## Complete Example
-
-See [example_test.go](example_test.go) for a comprehensive example showing:
-
-- Request ID extraction and logging setup
-- Database dependency management  
-- JWT authentication with dependency chaining
-- Multiple argument injection patterns
+1. Define your `Dep[T]`.
+2. Register it with a key to `Manager`.
+3. Define a struct `helloArgs`, write field tags so `Manager` knows what you need.
+4. Register your `func handleHello(c *gin.Context, arg helloArgs)` to `Manager`.
+5. `Manager` validates if everything looks okay before actually register it to gin router.
+6. `Manager` warps your handler and register it to router:
+   - list required middlewares in order.
+   - fill the struct with instances created by middleware.
+   - pass gin.Context and struct to your handler.
 
 ## License
 
