@@ -1,78 +1,235 @@
-# NIG - Simple middleware management and DI for Gin-Gonic
+# NIG - Simple Middleware Management and DI for Gin-Gonic
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/raohwork/nig.svg)](https://pkg.go.dev/github.com/raohwork/nig)
 
-NIG helps mid-sized project to manage gin middlewares.
+NIG is a lightweight dependency injection library for Gin-Gonic that helps mid-sized projects manage middleware and handler dependencies elegantly.
 
-# TL; DR
+## Installation
 
-Take a look at `example_test.go` and `integral_test.go`.
+```bash
+go get github.com/raohwork/nig
+```
 
-# Concept and usage
+## Quick Start
 
-The core of NIG is `Dep[T]`, a factory to create instance of `T` which is needed by handler, and the instance is extracted/computed from gin.Context via a user defined function or middleware.
+```go
+// Define dependencies
+reqIDDep := nig.NewDep(func(c *gin.Context) string {
+    return uuid.New().String()
+})
 
-A `Dep[T]` is composed by:
+loggerDep := nig.NewDep(func(c *gin.Context) zerolog.Logger {
+    return log.With().Str("request_id", reqIDDep.Get(c)).Logger()
+})
+nig.DependsOn(reqIDDep, loggerDep)
 
-- An instance of `T`: extracted from gin.Context (like jwt), generated on-the-fly (like request id or logger).
-- Set of gin middlewares: optional.
-- Another `Dep[T]`: To compute from, or to be updated.
+// Option 1: Runtime approach with Manager
+mgr := nig.New(router)
+mgr.Register("logger", loggerDep)
 
-To be clear, if every request shares same instance of `T`, db connection for example, it is NOT a `Dep[T]`. You probably should put it in a struct, and define handler as method of the struct.
+type HelloArgs struct {
+    Logger zerolog.Logger `nig:"logger"`
+}
+mgr.GET("/hello", func(c *gin.Context, args HelloArgs) {
+    args.Logger.Info().Msg("hello world")
+    c.JSON(200, gin.H{"message": "hello"})
+})
 
-Here are some good examples of `Dep[T]`:
+// Option 2: Static approach with Wrapper
+arg := nig.Arg1(loggerDep)
+wrapper := nig.Use(arg, router)
+wrapper.GET("/hello", func(c *gin.Context, logger zerolog.Logger) {
+    logger.Info().Msg("hello world")
+    c.JSON(200, gin.H{"message": "hello"})
+})
+```
 
-- Request ID: likely Dep[string] or Dep[uuid.UUID].
-- Structured logger: Dep[zerolog.Logger] is my favorite.
-- User info: Dep[UserInfo] which is extracted from jwt.
-- JWT: Dep[[]byte] if you need raw JWT.
-- Session data: Dep[SessionData] or Dep[*SessionData] if you don't use JWT.
+For complete examples, see `example_test.go` and `manager_integral_test.go` / `wrapper_integral_test.go`.
 
-If you defines `Dep[T]` properly, NIG ensures your handler will get working instance of `T`, by running middlewares bundled with `Dep[T]` and it's dependencies. The middleware bundled with `Dep[T]` MUST cooperate with handler well. For example, a `Dep[MyJWTClaim]` should return HTTP 403 and call `c.Abort()` if it failed to extract claim data from JWT, unless you want to handle it in your handler (and you probably want `Dep[*MyJWTClaim]` instead).
+## Core Concepts
 
-There will be two different approach: runtime and statically. You cannot mix the two approaches together: the key used to store value in gin.Context is filled by `Manager` to ensure it is aligned with struct tag, while `Wrapper` (`Arg[T]` actually) also fills the key if not filled.
+### Dep[T]
 
-## Ensure at runtime
+The core of NIG is `Dep[T]`, a factory that creates instances of type `T` for each request. The instance is extracted or computed from `gin.Context` via a user-defined function and optional middleware.
 
-`Manager` helps you to manage your `Dep[T]` and handlers. 
+A `Dep[T]` is composed of:
 
-1. Define your `Dep[T]`s.
-2. Register it with a key to `Manager`.
-3. Define a struct `helloArgs`, write field tags so `Manager` knows what you need.
-4. Register your `func handleHello(c *gin.Context, arg helloArgs)` to `Manager`.
-5. `Manager` validates if everything looks okay before actually register it to gin router.
-6. `Manager` warps your handler and register it to router:
-   - list required middlewares in order.
-   - fill the struct with instances created by middleware.
-   - pass gin.Context and struct to your handler.
-   
-Pros:
+- **A value of type T**: Extracted from gin.Context (like JWT claims) or generated on-the-fly (like request ID or logger)
+- **Optional gin middlewares**: Run before the value is created
+- **Optional dependencies**: Other `Dep[T]` instances it depends on or updates
 
-- Easy to use
-- Less repeative
+**Important**: If every request shares the same instance of `T` (e.g., database connection), it should NOT be a `Dep[T]`. Put shared resources in a struct and define handlers as methods of that struct instead.
 
-Cons:
+#### Good Examples of Dep[T]
 
-- Typo causes panic
-- Reflection is slow, but should be acceptable comparing to network latency
+- **Request ID**: `Dep[string]` or `Dep[uuid.UUID]`
+- **Structured logger**: `Dep[zerolog.Logger]` (can be enriched with request context)
+- **User info**: `Dep[UserInfo]` extracted from JWT
+- **JWT token**: `Dep[[]byte]` for raw JWT
+- **Session data**: `Dep[SessionData]` or `Dep[*SessionData]` if not using JWT
 
-## Ensure statically
+### Middleware Cooperation
 
-The `Wrapper` and `Arg` pair helps you to ensure your dependencies at compile time.
+When you define a `Dep[T]` with middleware, the middleware MUST cooperate properly with handlers:
 
-1. Define your `Dep[T]`.
-2. Define a struct `helloArgs`.
-3. Create an `Arg[helloArgs]` with `NewArg` and required `Dep[T]`s.
-4. Register your handler `func(*gin.Context, helloArgs)` with `Use`.
+- For required dependencies (e.g., `Dep[MyJWTClaim]`): The middleware should return HTTP 403 and call `c.Abort()` on failure
+- For optional dependencies (e.g., `Dep[*MyJWTClaim]`): The middleware can set nil and let the handler decide how to handle missing values
 
-Pros:
+### Dependency Relationships
 
-- Compile ok = program ok unless logicall error
-- Fast, no reflection at all
+NIG automatically manages dependency order using topological sorting:
 
-Cons:
+```go
+// Logger depends on request ID
+reqIDDep := nig.NewDep(func(c *gin.Context) string {
+    return uuid.New().String()
+})
 
-- Quite repeative as you have to write similar code for each struct
+loggerDep := nig.NewDep(func(c *gin.Context) zerolog.Logger {
+    return log.With().Str("request_id", reqIDDep.Get(c)).Logger()
+})
+nig.DependsOn(reqIDDep, loggerDep)
+
+// User info updates logger with user details
+userDep := nig.NewDep(func(c *gin.Context) UserInfo {
+    return extractUserFromJWT(c)
+})
+nig.Updates(loggerDep, userDep, func(logger zerolog.Logger, user UserInfo) zerolog.Logger {
+    return logger.With().Str("user_id", user.ID).Logger()
+})
+```
+
+## Two Approaches
+
+NIG offers two approaches for dependency injection. **You cannot mix them** in the same application, as they use different mechanisms for storing values in `gin.Context`.
+
+### Approach 1: Runtime Validation (Manager)
+
+Use `Manager` for a runtime, reflection-based approach with minimal boilerplate.
+
+**How it works:**
+
+1. Define your `Dep[T]` instances
+2. Register them with string keys to `Manager`
+3. Define handler argument structs with `nig` tags
+4. Register handlers - `Manager` validates everything and wires dependencies automatically
+
+**Example:**
+
+```go
+// Setup
+mgr := nig.New(router)
+mgr.Register("logger", loggerDep).
+    Register("reqid", reqIDDep).
+    Register("user", userDep)
+
+// Define handler arguments
+type UserHandlerArgs struct {
+    Logger zerolog.Logger `nig:"logger"`
+    User   UserInfo       `nig:"user"`
+}
+
+// Register handler
+mgr.GET("/profile", func(c *gin.Context, args UserHandlerArgs) {
+    args.Logger.Info().Msg("fetching profile")
+    c.JSON(200, args.User)
+})
+```
+
+**Pros:**
+- Easy to use with minimal boilerplate
+- Flexible - handlers only declare what they need
+- Less repetitive code
+
+**Cons:**
+- Typos in struct tags cause runtime panics
+- Uses reflection (slower, but typically negligible compared to network latency)
+- Errors only caught at runtime
+
+### Approach 2: Static Validation (Wrapper + Arg)
+
+Use `Wrapper` and `Arg` for compile-time type safety with no reflection.
+
+**How it works:**
+
+1. Define your `Dep[T]` instances
+2. Create an `Arg[T]` that combines dependencies
+3. Use `Use()` to create a `Wrapper`
+4. Register handlers - everything is type-checked at compile time
+
+**Example:**
+
+```go
+// Define argument type
+type UserHandlerArgs struct {
+    Logger zerolog.Logger
+    User   UserInfo
+}
+
+// Create Arg
+arg := nig.NewArg(func(c *gin.Context) UserHandlerArgs {
+    return UserHandlerArgs{
+        Logger: loggerDep.Get(c),
+        User:   userDep.Get(c),
+    }
+}, loggerDep, userDep)
+
+// Register handler
+wrapper := nig.Use(arg, router)
+wrapper.GET("/profile", func(c *gin.Context, args UserHandlerArgs) {
+    args.Logger.Info().Msg("fetching profile")
+    c.JSON(200, args.User)
+})
+```
+
+**Convenience functions for simple cases:**
+
+```go
+// Single dependency
+arg1 := nig.Arg1(loggerDep)
+nig.Use(arg1, router).GET("/hello", func(c *gin.Context, logger zerolog.Logger) {
+    // handler code
+})
+
+// Two dependencies
+arg2 := nig.Arg2(
+    func(logger zerolog.Logger, reqID string) MyArgs {
+        return MyArgs{Logger: logger, ReqID: reqID}
+    },
+    loggerDep, reqIDDep,
+)
+
+// Three dependencies
+arg3 := nig.Arg3(
+    func(logger zerolog.Logger, reqID string, user UserInfo) MyArgs {
+        return MyArgs{Logger: logger, ReqID: reqID, User: user}
+    },
+    loggerDep, reqIDDep, userDep,
+)
+```
+
+**Pros:**
+- Full compile-time type safety
+- Fast - no reflection
+- If it compiles, dependencies are correctly wired (barring logical errors)
+
+**Cons:**
+- More repetitive - must write `Arg` creation code for each handler type
+- More boilerplate compared to Manager approach
+
+## Choosing an Approach
+
+| Criterion | Manager (Runtime) | Wrapper (Static) |
+|-----------|------------------|------------------|
+| Type safety | Runtime | Compile-time |
+| Performance | Slower (reflection) | Faster (no reflection) |
+| Boilerplate | Less | More |
+| Error detection | Runtime panics | Compile errors |
+| Flexibility | High | Medium |
+
+**Recommendation:**
+- Use **Manager** for rapid development and when flexibility is important
+- Use **Wrapper** for production code where type safety and performance are critical
 
 ## License
 

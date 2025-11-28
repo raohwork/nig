@@ -6,6 +6,17 @@ package nig
 
 import "github.com/gin-gonic/gin"
 
+// New creates a new Manager instance for the given gin router.
+//
+// Manager provides a runtime approach to dependency injection, using reflection
+// to automatically wire dependencies to handler functions based on struct tags.
+//
+// The g parameter is the gin router (or router group) where handlers will be registered.
+//
+// Example:
+//
+//	router := gin.Default()
+//	mgr := nig.New(router)
 func New(g gin.IRouter) *Manager {
 	return &Manager{
 		r:    g,
@@ -13,11 +24,58 @@ func New(g gin.IRouter) *Manager {
 	}
 }
 
+// Manager manages dependencies and handlers using a runtime, reflection-based approach.
+//
+// It allows you to:
+//   - Register dependencies with string keys
+//   - Define handler functions that accept *gin.Context and structs with "nig" tags
+//   - Automatically wire dependencies to handlers based on struct tags
+//
+// This approach is more flexible and requires less boilerplate code compared to
+// the static Wrapper approach, but uses reflection and may panic at runtime if
+// dependencies are misconfigured.
+//
+// Example workflow:
+//
+//	// 1. Create manager
+//	mgr := nig.New(router)
+//
+//	// 2. Register dependencies
+//	mgr.Register("logger", loggerDep).Register("reqid", reqIDDep)
+//
+//	// 3. Define handler with tagged struct
+//	type HelloArgs struct {
+//		Logger zerolog.Logger `nig:"logger"`
+//		ReqID  string          `nig:"reqid"`
+//	}
+//	mgr.GET("/hello", func(c *gin.Context, args HelloArgs) {
+//		args.Logger.Info().Str("request_id", args.ReqID).Msg("hello")
+//		c.JSON(200, gin.H{"message": "hello"})
+//	})
 type Manager struct {
 	r    gin.IRouter
 	deps map[string]any
 }
 
+// Register registers a dependency with the given key.
+//
+// The key is used in struct tags to reference this dependency. The dep parameter
+// should be a *Dep[T] instance created with NewDep.
+//
+// Returns the Manager for method chaining.
+//
+// Example:
+//
+//	loggerDep := NewDep(func(c *gin.Context) zerolog.Logger {
+//		return log.Logger
+//	})
+//	mgr.Register("logger", loggerDep)
+//
+// Then in your handler struct:
+//
+//	type MyArgs struct {
+//		Logger zerolog.Logger `nig:"logger"`
+//	}
 func (m *Manager) Register(key string, dep any) *Manager {
 	m.deps[key] = dep
 

@@ -6,6 +6,26 @@ package nig
 
 import "github.com/gin-gonic/gin"
 
+// Use creates a Wrapper for registering type-safe handlers with the given Arg.
+//
+// This is the entry point for the static, compile-time approach to dependency
+// injection. Unlike Manager which uses reflection and struct tags, Wrapper
+// provides full type safety at compile time.
+//
+// The arg parameter defines what dependencies are needed and how to construct
+// the handler argument from gin.Context.
+// The r parameter is the gin router (or router group) where handlers will be registered.
+//
+// Returns a Wrapper that can be used to register handlers via GET, POST, etc.
+//
+// Example:
+//
+//	loggerArg := Arg1(loggerDep)
+//	wrapper := Use(loggerArg, router)
+//	wrapper.GET("/hello", func(c *gin.Context, logger zerolog.Logger) {
+//		logger.Info().Msg("handling request")
+//		c.JSON(200, gin.H{"message": "hello"})
+//	})
 func Use[T any](arg Arg[T], r gin.IRouter) Wrapper[T] {
 	return Wrapper[T]{
 		r:   r,
@@ -13,6 +33,37 @@ func Use[T any](arg Arg[T], r gin.IRouter) Wrapper[T] {
 	}
 }
 
+// Wrapper provides a type-safe way to register Gin handlers with dependency injection.
+//
+// It wraps a gin router and an Arg[T], providing methods to register handlers that
+// accept *gin.Context and a typed argument T. The wrapper ensures all required
+// dependencies are set up before calling your handler.
+//
+// This approach offers compile-time type safety: if your code compiles, your
+// dependencies are correctly wired. This is in contrast to Manager's runtime
+// approach which uses reflection and may panic at runtime.
+//
+// Wrapper is created with the Use function and provides HTTP method registration
+// functions (GET, POST, etc.) that accept handlers of type func(*gin.Context, T).
+//
+// Example:
+//
+//	type MyArgs struct {
+//		Logger zerolog.Logger
+//		ReqID  string
+//	}
+//	arg := NewArg(func(c *gin.Context) MyArgs {
+//		return MyArgs{
+//			Logger: loggerDep.Get(c),
+//			ReqID:  reqIDDep.Get(c),
+//		}
+//	}, loggerDep, reqIDDep)
+//
+//	wrapper := Use(arg, router)
+//	wrapper.GET("/hello", func(c *gin.Context, args MyArgs) {
+//		args.Logger.Info().Str("request_id", args.ReqID).Msg("hello")
+//		c.JSON(200, gin.H{"message": "hello"})
+//	})
 type Wrapper[T any] struct {
 	r   gin.IRouter
 	arg Arg[T]

@@ -21,7 +21,7 @@ type anotherDep interface {
 // Dep represents a dependency of you gin application.
 //
 // A dependency is composed by a value with set of gin middlewares.
-// You can not create your own implementation, only [CreateDep] is
+// You can not create your own implementation, only [NewDep] is
 // capable to create new Dep instance. The value of Dep is mean to
 // varies with different request. If the value is unchanged among
 // all request, you should place it in a shared struct, as Dep passes
@@ -58,6 +58,25 @@ func (i *Dep[T]) addDep(b anotherDep) {
 	}
 }
 
+// NewDep creates a new Dep[T] instance.
+//
+// The creater function is called to generate the value of T from gin.Context
+// for each request. The optional mw parameters are gin middlewares that will
+// be executed before the creater function. These middlewares typically perform
+// tasks like authentication, validation, or setting up context values.
+//
+// Example:
+//
+//	// Create a request ID dependency
+//	reqIDDep := NewDep(func(c *gin.Context) string {
+//		return uuid.New().String()
+//	})
+//
+//	// Create a JWT dependency with authentication middleware
+//	jwtDep := NewDep(func(c *gin.Context) []byte {
+//		token := c.GetHeader("Authorization")
+//		return []byte(token)
+//	}, authMiddleware)
 func NewDep[T any](creater func(*gin.Context) T, mw ...gin.HandlerFunc) *Dep[T] {
 	ret := &Dep[T]{
 		create: creater,
@@ -66,11 +85,59 @@ func NewDep[T any](creater func(*gin.Context) T, mw ...gin.HandlerFunc) *Dep[T] 
 	return ret
 }
 
+// DependsOn establishes a dependency relationship between two Dep instances.
+//
+// This function declares that victim depends on dep, ensuring that dep's
+// middlewares will be executed before victim's middlewares. This is useful
+// when victim needs to access values created by dep, but doesn't need to
+// modify dep's value.
+//
+// The dep parameter is the dependency that must be set up first.
+// The victim parameter is the Dep that depends on dep.
+//
+// Returns the victim Dep for method chaining.
+//
+// Example:
+//
+//	// Logger depends on request ID to include it in logs
+//	reqIDDep := NewDep(func(c *gin.Context) string {
+//		return uuid.New().String()
+//	})
+//	loggerDep := NewDep(func(c *gin.Context) zerolog.Logger {
+//		reqID := reqIDDep.Get(c)
+//		return log.With().Str("request_id", reqID).Logger()
+//	})
+//	DependsOn(reqIDDep, loggerDep)
 func DependsOn[D, T any](dep *Dep[D], victim *Dep[T]) *Dep[T] {
 	victim.addDep(dep)
 	return victim
 }
 
+// Updates establishes a dependency relationship where victim can modify dep's value.
+//
+// This function is similar to DependsOn, but additionally allows victim to update
+// dep's value after victim is created. This is useful for enriching dependencies,
+// such as adding context fields to a logger or updating shared state.
+//
+// The dep parameter is the dependency to be updated.
+// The victim parameter is the Dep that will trigger the update.
+// The f function receives the current dep value and victim value, and returns
+// the new dep value.
+//
+// Returns the victim Dep for method chaining.
+//
+// Example:
+//
+//	// User info dependency updates logger with user details
+//	loggerDep := NewDep(func(c *gin.Context) zerolog.Logger {
+//		return log.Logger
+//	})
+//	userDep := NewDep(func(c *gin.Context) UserInfo {
+//		return extractUserFromJWT(c)
+//	})
+//	Updates(loggerDep, userDep, func(logger zerolog.Logger, user UserInfo) zerolog.Logger {
+//		return logger.With().Str("user_id", user.ID).Logger()
+//	})
 func Updates[D, T any](dep *Dep[D], victim *Dep[T], f func(D, T) D) *Dep[T] {
 	victim.addDep(dep)
 	victim.mws = append(victim.mws, func(c *gin.Context) {
