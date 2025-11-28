@@ -30,13 +30,13 @@ Here are some good examples of `Dep[T]`:
 
 If you defines `Dep[T]` properly, NIG ensures your handler will get working instance of `T`, by running middlewares bundled with `Dep[T]` and it's dependencies. The middleware bundled with `Dep[T]` MUST cooperate with handler well. For example, a `Dep[MyJWTClaim]` should return HTTP 403 and call `c.Abort()` if it failed to extract claim data from JWT, unless you want to handle it in your handler (and you probably want `Dep[*MyJWTClaim]` instead).
 
-There will be two different approach: runtime and statically. Currently only runtime is implemented.
+There will be two different approach: runtime and statically. You cannot mix the two approaches together: the key used to store value in gin.Context is filled by `Manager` to ensure it is aligned with struct tag, while `Wrapper` (`Arg[T]` actually) also fills the key if not filled.
 
 ## Ensure at runtime
 
 `Manager` helps you to manage your `Dep[T]` and handlers. 
 
-1. Define your `Dep[T]`.
+1. Define your `Dep[T]`s.
 2. Register it with a key to `Manager`.
 3. Define a struct `helloArgs`, write field tags so `Manager` knows what you need.
 4. Register your `func handleHello(c *gin.Context, arg helloArgs)` to `Manager`.
@@ -45,6 +45,34 @@ There will be two different approach: runtime and statically. Currently only run
    - list required middlewares in order.
    - fill the struct with instances created by middleware.
    - pass gin.Context and struct to your handler.
+   
+Pros:
+
+- Easy to use
+- Less repeative
+
+Cons:
+
+- Typo causes panic
+- Reflection is slow, but should be acceptable comparing to network latency
+
+## Ensure statically
+
+The `Wrapper` and `Arg` pair helps you to ensure your dependencies at compile time.
+
+1. Define your `Dep[T]`.
+2. Define a struct `helloArgs`.
+3. Create an `Arg[helloArgs]` with `NewArg` and required `Dep[T]`s.
+4. Register your handler `func(*gin.Context, helloArgs)` with `Use`.
+
+Pros:
+
+- Compile ok = program ok unless logicall error
+- Fast, no reflection at all
+
+Cons:
+
+- Quite repeative as you have to write similar code for each struct
 
 ## License
 
