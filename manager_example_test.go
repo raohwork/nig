@@ -30,7 +30,7 @@ type HelloArgs struct {
 	RequestID string         `nig:"request_id"`
 }
 
-func Example() {
+func Example_runtimeApproach() {
 	// discard gin log to prevent output pollution
 	gin.DefaultWriter = io.Discard
 	g := gin.Default()
