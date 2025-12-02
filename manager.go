@@ -80,9 +80,8 @@ func (m *Manager) Register(key string, dep any) *Manager {
 	m.deps[key] = dep
 
 	// Set the key for Dep[T] instances
-	if d, ok := dep.(anotherDep); ok {
-		d.setKey(key)
-	}
+	// fail-fast
+	dep.(anotherDep).setKey(key)
 
 	return m
 }
