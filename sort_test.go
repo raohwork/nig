@@ -67,6 +67,19 @@ func (s *sortDepsSuite) Test_Empty() {
 	s.Empty(actual)
 }
 
+func (s *sortDepsSuite) Test_Minimal() {
+	DependsOn(s.B, s.A)
+	DependsOn(s.C, s.B)
+	deps := []anotherDep{s.A}
+	expect := []anotherDep{
+		s.C, s.B, s.A,
+	}
+
+	actual, err := sortDeps(deps)
+	s.Require().NoError(err)
+	s.Equal(expect, actual, "expected: %s\nactual: %s", s.dump(expect), s.dump(actual))
+}
+
 func (s *sortDepsSuite) Test_Duplicated() {
 	DependsOn(s.B, s.A)
 	DependsOn(s.C, s.B)

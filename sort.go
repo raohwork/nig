@@ -36,7 +36,7 @@ func newFifo() simpleFifo {
 }
 
 func sortDeps(deps []anotherDep) ([]anotherDep, error) {
-	if len(deps) <= 1 {
+	if len(deps) < 1 {
 		return deps, nil
 	}
 	// create graph
